@@ -1,5 +1,4 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { User } from './user.entity';
 import {
   Column,
   CreateDateColumn,
@@ -24,9 +23,9 @@ export class OAuthUser {
   @Column()
   user_id: string;
 
-  @ManyToOne(() => User, (user: User) => user.oauthAccounts)
+  @ManyToOne('User', (user: any) => user.oauthAccounts)
   @JoinColumn({ name: 'user_id' })
-  user: User;
+  user: any;
 
   @Column({ type: 'varchar', length: 20 })
   provider: string;

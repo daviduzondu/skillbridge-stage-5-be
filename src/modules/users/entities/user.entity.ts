@@ -9,7 +9,6 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { OAuthUser } from './user-oauth-account.entity';
 
 export enum UserRole {
   ADMIN = 'admin',
@@ -112,7 +111,7 @@ export class User {
   })
   refreshTokenHash: string | null;
 
-  @OneToMany(() => OAuthUser, (oauthAccount: OAuthUser) => oauthAccount.user)
+  @OneToMany('OAuthUser', (oauthAccount: OAuthUser) => oauthAccount.user)
   oauthAccounts: OAuthUser[];
 
   @ApiProperty()
