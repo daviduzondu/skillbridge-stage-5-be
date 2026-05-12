@@ -4,7 +4,6 @@
   "description": "SkillBridge backend built from the HNG NestJS boilerplate conventions",
   "author": "",
   "private": true,
-  "type": "module",
   "license": "UNLICENSED",
   "engines": {
     "node": ">=20.0.0",
