@@ -5,5 +5,10 @@ import { env } from './env';
 export function redisQueueConnection(): ConnectionOptions | null {
   const url = env.REDIS_URL?.trim();
   if (!url) return null;
-  return { url };
+  return {
+    url,
+    tls: {
+      rejectUnauthorized: false,
+    },
+  };
 }
