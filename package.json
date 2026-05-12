@@ -4,6 +4,7 @@
   "description": "SkillBridge backend built from the HNG NestJS boilerplate conventions",
   "author": "",
   "private": true,
+  "type": "module",
   "license": "UNLICENSED",
   "engines": {
     "node": ">=20.0.0",
@@ -16,7 +17,7 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main.cjs",
+    "start:prod": "node dist/main.js",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
     "test:watch": "jest --watch",
@@ -35,8 +36,8 @@
     "schema:drop": "pnpm typeorm schema:drop",
     "seed": "ts-node -r tsconfig-paths/register src/database/seeds/run-seed.ts",
     "db:reset": "pnpm schema:drop && pnpm migration:run && pnpm seed",
-    "migrate:prod": "typeorm migration:run -d dist/database/data-source.cjs",
-    "start:prod:migrate": "typeorm migration:run -d dist/database/data-source.cjs && node dist/main.cjs"
+    "migrate:prod": "typeorm migration:run -d dist/database/data-source.js",
+    "start:prod:migrate": "typeorm migration:run -d dist/database/data-source.js && node dist/main.js"
   },
   "dependencies": {
     "@hng-sdk/orm": "^0.0.0",
