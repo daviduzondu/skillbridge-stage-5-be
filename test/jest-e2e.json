@@ -1,0 +1,22 @@
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": ".",
+  "testEnvironment": "node",
+  "testRegex": ".e2e-spec.ts$",
+  "setupFiles": ["./jest-e2e.setup.ts"],
+  "transform": {
+    "^.+\\.(t|j)s$": [
+      "ts-jest",
+      {
+        "tsconfig": "./test/tsconfig.e2e.json"
+      }
+    ]
+  },
+  "moduleNameMapper": {
+    "^src/(.*)$": "<rootDir>/../src/$1",
+    "^@modules/(.*)$": "<rootDir>/../src/modules/$1"
+  },
+  "transformIgnorePatterns": [
+    "node_modules/(?!.*(@t3-oss\\+env-core|@t3-oss[\\\\/]env-core|zod|@scure|@noble|otplib|@otplib))"
+  ]
+}

@@ -1,0 +1,143 @@
+name: CD
+
+on:
+  push:
+    branches: [dev, staging, main]
+
+concurrency:
+  group: cd-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI Checks
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Deploy to ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    needs: ci
+    steps:
+      - name: Set deploy target
+        id: target
+        run: |
+          if [ "${{ github.ref_name }}" = "dev" ]; then
+            echo "dir=dev" >> "$GITHUB_OUTPUT"
+            echo "app=skillbridge-api-dev" >> "$GITHUB_OUTPUT"
+            echo "env_flag=dev" >> "$GITHUB_OUTPUT"
+            echo "environment=dev" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_name }}" = "staging" ]; then
+            echo "dir=staging" >> "$GITHUB_OUTPUT"
+            echo "app=skillbridge-api-staging" >> "$GITHUB_OUTPUT"
+            echo "env_flag=staging" >> "$GITHUB_OUTPUT"
+            echo "environment=staging" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            echo "dir=production" >> "$GITHUB_OUTPUT"
+            echo "app=skillbridge-api-prod" >> "$GITHUB_OUTPUT"
+            echo "env_flag=production" >> "$GITHUB_OUTPUT"
+            echo "environment=production" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Unknown branch '${{ github.ref_name }}' — expected 'dev', 'staging', or 'main'"
+            exit 1
+          fi
+
+      - name: Validate env secret
+        env:
+          DOTENV_DEV: ${{ secrets.DEV_ENV }}
+          DOTENV_STAGING: ${{ secrets.STAGING_ENV }}
+          DOTENV_PRODUCTION: ${{ secrets.PRODUCTION_ENV }}
+        run: |
+          ENV="${{ steps.target.outputs.environment }}"
+          if [ "$ENV" = "production" ]; then
+            DOTENV="$DOTENV_PRODUCTION"
+          elif [ "$ENV" = "staging" ]; then
+            DOTENV="$DOTENV_STAGING"
+          elif [ "$ENV" = "dev" ]; then
+            DOTENV="$DOTENV_DEV"
+          else
+            echo "::error::Unsupported environment '$ENV'"
+            exit 1
+          fi
+          if [ -z "$DOTENV" ]; then
+            echo "::error::Environment secret for '$ENV' is empty or unset. Check GitHub repo secrets."
+            exit 1
+          fi
+          echo "Environment secret is set (${#DOTENV} chars)"
+          {
+            echo "DOTENV<<EOF"
+            echo "$DOTENV"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        env:
+          DOTENV: ${{ env.DOTENV }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          envs: DOTENV
+          script: |
+            set -e
+
+            DEPLOY_DIR="$HOME/skillbridge/backend/${{ steps.target.outputs.dir }}"
+            APP_NAME="${{ steps.target.outputs.app }}"
+            ENV_FLAG="${{ steps.target.outputs.env_flag }}"
+            REPO="https://github.com/${{ github.repository }}.git"
+            BRANCH="${{ github.ref_name }}"
+
+            if [ -z "$DOTENV" ]; then
+              echo "FATAL: env secret for $ENV_FLAG is empty"
+              exit 1
+            fi
+
+            mkdir -p "$DEPLOY_DIR"
+            cd "$DEPLOY_DIR"
+
+            # Clone on first deploy, pull on subsequent
+            if [ ! -d ".git" ]; then
+              git clone --branch "$BRANCH" "$REPO" .
+            else
+              git fetch origin "$BRANCH"
+              git reset --hard "origin/$BRANCH"
+            fi
+
+            # Write environment file
+            printf '%s\n' "$DOTENV" > .env
+            chmod 600 .env
+
+            # Install dependencies and build
+            pnpm install --frozen-lockfile
+            pnpm build
+
+            DATABASE_NAME=$(grep -E '^DATABASE_NAME=' .env | cut -d '=' -f2 | tr -d '\r')
+            DATABASE_USER=$(grep -E '^DATABASE_USER=' .env | cut -d '=' -f2 | tr -d '\r')
+            DATABASE_HOST=$(grep -E '^DATABASE_HOST=' .env | cut -d '=' -f2 | tr -d '\r')
+            DATABASE_PORT=$(grep -E '^DATABASE_PORT=' .env | cut -d '=' -f2 | tr -d '\r')
+            DATABASE_PASSWORD=$(grep -E '^DATABASE_PASSWORD=' .env | cut -d '=' -f2 | tr -d '\r')
+            if [ -z "$DATABASE_NAME" ]; then
+              echo "FATAL: DATABASE_NAME is empty"
+              exit 1
+            fi
+
+            DATABASE_NAME_SQL=$(printf '%s' "$DATABASE_NAME" | sed "s/'/''/g")
+            if PGPASSWORD="$DATABASE_PASSWORD" psql -h "$DATABASE_HOST" -p "${DATABASE_PORT:-5432}" -U "$DATABASE_USER" -d postgres -tc \
+              "SELECT 1 FROM pg_database WHERE datname = '$DATABASE_NAME_SQL'" | grep -q 1; then
+              echo "Database $DATABASE_NAME already exists"
+            else
+              PGPASSWORD="$DATABASE_PASSWORD" createdb -h "$DATABASE_HOST" -p "${DATABASE_PORT:-5432}" -U "$DATABASE_USER" "$DATABASE_NAME"
+            fi
+
+            # Run database migrations
+            pnpm migration:run
+
+            # Restart application with PM2
+            export PM2_APP_NAME="$APP_NAME"
+
+            if pm2 describe "$APP_NAME" > /dev/null 2>&1; then
+              pm2 restart ecosystem.config.cjs --only "$APP_NAME" --env "$ENV_FLAG" --update-env
+            else
+              pm2 start ecosystem.config.cjs --env "$ENV_FLAG"
+            fi
+            pm2 save
