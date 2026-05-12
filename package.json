@@ -35,8 +35,8 @@
     "schema:drop": "pnpm typeorm schema:drop",
     "seed": "ts-node -r tsconfig-paths/register src/database/seeds/run-seed.ts",
     "db:reset": "pnpm schema:drop && pnpm migration:run && pnpm seed",
-    "migrate:prod": "typeorm migration:run -d dist/database/data-source.js",
-    "start:prod:migrate": "typeorm migration:run -d dist/database/data-source.js && node dist/main.js"
+    "migrate:prod": "typeorm migration:run -d dist/database/data-source.cjs",
+    "start:prod:migrate": "typeorm migration:run -d dist/database/data-source.cjs && node dist/main.cjs"
   },
   "dependencies": {
     "@hng-sdk/orm": "^0.0.0",
