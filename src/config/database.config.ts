@@ -2,12 +2,12 @@ import { registerAs } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { env } from './env';
 
-const sslConfig = env.DATABASE_SSL
-  ? {
-      ca: env.DATABASE_SSL_CA,
-      rejectUnauthorized: true,
-    }
-  : false;
+const sslConfig =
+  process.env.DATABASE_SSL === 'true'
+    ? {
+        rejectUnauthorized: false,
+      }
+    : false;
 
 export const databaseConfig = registerAs(
   'database',
