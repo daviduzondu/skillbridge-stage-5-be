@@ -112,41 +112,6 @@ export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private redis: Redis | null = null;
 
-  private getRedis(): Redis {
-    if (!this.redis) {
-      const url = env.REDIS_URL?.trim();
-      if (url) {
-        this.redis = new Redis(url);
-      }
-    }
-    return this.redis!;
-  }
-
-  private generateRecoveryCodes(count: number): string[] {
-    const codes: string[] = [];
-    for (let i = 0; i < count; i++) {
-      const part1 = randomUUID().replace(/-/g, '').slice(0, 4).toUpperCase();
-      const part2 = randomUUID().replace(/-/g, '').slice(0, 4).toUpperCase();
-      codes.push(`${part1}-${part2}`);
-    }
-    return codes;
-  }
-
-  private async saveRecoveryCodes(
-    userId: string,
-    codes: string[],
-  ): Promise<void> {
-    const hashedCodes = await Promise.all(
-      codes.map((code) => argon2.hash(code)),
-    );
-    const records = hashedCodes.map((hash) => ({
-      user_id: userId,
-      code_hash: hash,
-      used_at: null,
-    }));
-    await this.recoveryCodeRepository.insert(records);
-  }
-
   constructor(
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
@@ -479,6 +444,8 @@ export class AuthService {
 
   async enableTotp2fa({ userId, code }: { userId: string; code: string }) {
     const user = await this.usersService.findOne(userId);
+    if (user.two_fa_enabled)
+      throw new BadRequestError(ErrorMessages.AUTH.TWO_FA_ALREADY_ENABLED);
     if (!user.two_fa_totp_secret)
       throw new BadRequestError(ErrorMessages.AUTH.TWO_FA_NOT_SETUP);
     const decryptedSecret = decrypt(user.two_fa_totp_secret);
@@ -496,17 +463,11 @@ export class AuthService {
 
     return {
       message: SuccessMessages.AUTH.TOTP_2FA_ENABLE_SUCCESS,
-      recoveryCodes,
+      data: { recoveryCodes },
     };
   }
 
-  async disable2fa({
-    userId,
-    password,
-  }: {
-    userId: string;
-    password: string;
-  }) {
+  async disable2fa({ userId, password }: { userId: string; password: string }) {
     const user = await this.usersService.findOne(userId);
 
     if (!user.password) {
@@ -549,7 +510,7 @@ export class AuthService {
 
     return {
       message: 'Recovery codes regenerated',
-      recoveryCodes,
+      data: { recoveryCodes },
     };
   }
 
@@ -594,13 +555,7 @@ export class AuthService {
     throw new BadRequestError(ErrorMessages.AUTH.TWO_FA_NOT_SETUP);
   }
 
-  async verifyRecoveryCode({
-    userId,
-    code,
-  }: {
-    userId: string;
-    code: string;
-  }) {
+  async verifyRecoveryCode({ userId, code }: { userId: string; code: string }) {
     await this.consumeStateToken(userId);
 
     const user = await this.usersService.findOne(userId);
@@ -727,5 +682,40 @@ export class AuthService {
       is_verified: user.is_verified,
       onboardingComplete: user.onboarding_complete,
     };
+  }
+
+  private getRedis(): Redis {
+    if (!this.redis) {
+      const url = env.REDIS_URL?.trim();
+      if (url) {
+        this.redis = new Redis(url);
+      }
+    }
+    return this.redis!;
+  }
+
+  private generateRecoveryCodes(count: number): string[] {
+    const codes: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const part1 = randomUUID().replace(/-/g, '').slice(0, 4).toUpperCase();
+      const part2 = randomUUID().replace(/-/g, '').slice(0, 4).toUpperCase();
+      codes.push(`${part1}-${part2}`);
+    }
+    return codes;
+  }
+
+  private async saveRecoveryCodes(
+    userId: string,
+    codes: string[],
+  ): Promise<void> {
+    const hashedCodes = await Promise.all(
+      codes.map((code) => argon2.hash(code)),
+    );
+    const records = hashedCodes.map((hash) => ({
+      user_id: userId,
+      code_hash: hash,
+      used_at: null,
+    }));
+    await this.recoveryCodeRepository.insert(records);
   }
 }
