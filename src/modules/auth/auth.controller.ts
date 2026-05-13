@@ -54,7 +54,9 @@ import { ErrorMessages, SuccessMessages } from '../../shared';
 import {
   DisableTotp2faDto,
   EnableTotp2faDto,
-  Verify2fa,
+  VerifyMfa,
+  VerifyRecoveryCode,
+  RegenerateRecoveryCodesDto,
 } from '@modules/auth/dto/2fa.dto';
 import { TwoFaPendingGuard } from '@modules/auth/guards/two-fa-pending.guard';
 
@@ -286,7 +288,7 @@ export class AuthController {
     status: HttpStatus.CONFLICT,
     description: '2FA is already enabled',
   })
-  @Post('2fa/totp/setup')
+  @Post('mfa/totp/setup')
   setup2faTotp(@CurrentUser() user: AuthenticatedUser) {
     return this.authService.setup2faTotp(user);
   }
@@ -309,7 +311,7 @@ export class AuthController {
     status: HttpStatus.CONFLICT,
     description: 'No TOTP secret found. Call setup endpoint first.',
   })
-  @Post('2fa/totp/enable')
+  @Post('mfa/totp/enable')
   enable2faTotp(
     @CurrentUser() user: AuthenticatedUser,
     @Body() payload: EnableTotp2faDto,
@@ -338,30 +340,54 @@ export class AuthController {
     status: HttpStatus.CONFLICT,
     description: '2FA is not enabled',
   })
-  @Post('2fa/disable')
+  @Post('mfa/disable')
   disable2fa(
     @CurrentUser() user: AuthenticatedUser,
     @Body() payload: DisableTotp2faDto,
   ) {
     return this.authService.disable2fa({
       userId: user.sub,
-      code: payload.code,
+      password: payload.password,
     });
   }
 
+  @Post('mfa/recovery-codes/regenerate')
+  @ApiBearerAuth('JWT')
+  @ApiOperation({
+    summary: 'Regenerate recovery codes',
+    description:
+      'Invalidates all existing recovery codes and generates a new set of 8 codes. Requires password authentication. The new codes are shown once and must be saved by the user.',
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'New recovery codes generated (shown once)',
+  })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: '2FA is not enabled or invalid password',
+  })
+  regenerateRecoveryCodes(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() payload: RegenerateRecoveryCodesDto,
+  ) {
+    return this.authService.regenerateRecoveryCodes(
+      user.sub,
+      payload.password,
+    );
+  }
+
   @Public()
-  @Post('2fa/verify')
+  @Post('mfa')
   @ApiBearerAuth('JWT')
   @UseGuards(TwoFaPendingGuard)
   @ApiOperation({
-    summary: 'Verify TOTP two-factor authentication code',
+    summary: 'Verify TOTP code for MFA',
     description:
       'Verifies the TOTP code entered by the user after login. If valid, returns authentication tokens and clears the 2FA pending state. This endpoint requires a JWT token that was issued when 2FA was triggered.',
   })
   @ApiResponse({
     status: HttpStatus.OK,
-    description:
-      '2FA verification successful. Auth cookies set with fresh tokens.',
+    description: 'MFA verification successful. Auth cookies set with fresh tokens.',
   })
   @ApiResponse({
     status: HttpStatus.BAD_REQUEST,
@@ -371,12 +397,46 @@ export class AuthController {
     status: HttpStatus.UNAUTHORIZED,
     description: 'Invalid or expired JWT token',
   })
-  async verify2fa(
+  async verifyMfa(
     @CurrentUser() user: AuthenticatedUser,
-    @Body() payload: Verify2fa,
+    @Body() payload: VerifyMfa,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const result = await this.authService.verify2fa({
+    const result = await this.authService.verifyMfa({
+      userId: user.sub,
+      code: payload.code,
+    });
+    setAuthCookies(response, result.tokens);
+    return this.authService.toResponse(result);
+  }
+
+  @Public()
+  @Post('mfa/recovery')
+  @ApiBearerAuth('JWT')
+  @UseGuards(TwoFaPendingGuard)
+  @ApiOperation({
+    summary: 'Verify recovery code for MFA',
+    description:
+      'Verifies a recovery code entered by the user after login. If valid, returns authentication tokens, clears the 2FA pending state, and marks the code as used.',
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'MFA verification successful. Auth cookies set with fresh tokens.',
+  })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'Invalid or expired recovery code',
+  })
+  @ApiResponse({
+    status: HttpStatus.UNAUTHORIZED,
+    description: 'Invalid or expired JWT token',
+  })
+  async verifyRecoveryCode(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() payload: VerifyRecoveryCode,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.authService.verifyRecoveryCode({
       userId: user.sub,
       code: payload.code,
     });

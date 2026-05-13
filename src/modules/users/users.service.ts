@@ -274,7 +274,7 @@ export class UsersService {
       {
         two_fa_enabled: state,
         two_fa_method: TwoFactorAuthMethod.TOTP,
-        ...(state === false ? { two_fa_totp_secret: null } : {}),
+        ...(state === false ? { two_fa_totp_secret: null, two_fa_method: null } : {}),
       },
     );
   }

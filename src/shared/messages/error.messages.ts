@@ -16,7 +16,9 @@ export const ErrorMessages = {
     OAUTH_SIGNUP_ROLE_REQUIRED: 'OAuth signup role required',
     TWO_FA_REQUIRED: 'Two-Factor Authentication required',
     TWO_FA_INVALID_CODE:
-      'Invalid Two-Factor Authentication code, please try again',
+      'Invalid authentication code, please try again',
+    TWO_FA_INVALID_RECOVERY_CODE:
+      'Invalid or already used recovery code',
     TWO_FA_NOT_SETUP: '2FA has not been set up on this account',
     TWO_FA_ALREADY_ENABLED:
       'A 2FA method is already active on this account. Please disable it first before setting up a new one.',

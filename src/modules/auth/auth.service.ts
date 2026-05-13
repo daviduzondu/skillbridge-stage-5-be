@@ -5,10 +5,13 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
 import { randomUUID } from 'crypto';
+import { IsNull } from 'typeorm';
 import type { StringValue } from 'ms';
+import { Repository } from 'typeorm';
 import { env } from '../../config/env';
 import { MailService } from '../mail/mail.service';
 import { User, UserRole } from '../users/entities/user.entity';
@@ -20,6 +23,7 @@ import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { VerificationOtpSource } from './entities/verification-otp.entity';
+import { RecoveryCode } from './entities/recovery-code.entity';
 import { JwtPayload } from './strategies/jwt.strategy';
 import { VerificationOtpService } from './verification-otp.service';
 import { PasswordResetOtpService } from './password-reset-otp.service';
@@ -32,6 +36,7 @@ import {
   SuccessMessages,
   UnauthorizedError,
 } from '../../shared';
+import Redis from 'ioredis';
 import { generateSecret, verifySync, generateURI } from 'otplib';
 import { encrypt, decrypt } from 'src/utils/encryption.utils';
 import { AuthenticatedUser } from '@shared/decorators/current-user.decorator';
@@ -105,6 +110,42 @@ export interface OAuthProfilePayload {
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+  private redis: Redis | null = null;
+
+  private getRedis(): Redis {
+    if (!this.redis) {
+      const url = env.REDIS_URL?.trim();
+      if (url) {
+        this.redis = new Redis(url);
+      }
+    }
+    return this.redis!;
+  }
+
+  private generateRecoveryCodes(count: number): string[] {
+    const codes: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const part1 = randomUUID().replace(/-/g, '').slice(0, 4).toUpperCase();
+      const part2 = randomUUID().replace(/-/g, '').slice(0, 4).toUpperCase();
+      codes.push(`${part1}-${part2}`);
+    }
+    return codes;
+  }
+
+  private async saveRecoveryCodes(
+    userId: string,
+    codes: string[],
+  ): Promise<void> {
+    const hashedCodes = await Promise.all(
+      codes.map((code) => argon2.hash(code)),
+    );
+    const records = hashedCodes.map((hash) => ({
+      user_id: userId,
+      code_hash: hash,
+      used_at: null,
+    }));
+    await this.recoveryCodeRepository.insert(records);
+  }
 
   constructor(
     private readonly usersService: UsersService,
@@ -113,6 +154,8 @@ export class AuthService {
     private readonly passwordResetOtpService: PasswordResetOtpService,
     private readonly mailService: MailService,
     private readonly passwordResetQueue: PasswordResetQueueService,
+    @InjectRepository(RecoveryCode)
+    private readonly recoveryCodeRepository: Repository<RecoveryCode>,
   ) {}
 
   async register(dto: RegisterDto): Promise<{ message: string }> {
@@ -225,6 +268,10 @@ export class AuthService {
         { sub: user.id, type: '2fa_pending' },
         { expiresIn: '5m' },
       );
+      const redis = this.getRedis();
+      if (redis) {
+        await redis.setex(`state_token:${user.id}`, 300, tempToken);
+      }
       return {
         message: ErrorMessages.AUTH.TWO_FA_REQUIRED,
         state_token: tempToken,
@@ -442,39 +489,85 @@ export class AuthService {
     if (!result.valid)
       throw new UnauthorizedError(ErrorMessages.AUTH.TWO_FA_INVALID_CODE);
     await this.usersService.set2faTotpActiveState(userId, true);
+    await this.usersService.setRefreshTokenHash(userId, null);
+
+    const recoveryCodes = this.generateRecoveryCodes(8);
+    await this.saveRecoveryCodes(userId, recoveryCodes);
 
     return {
       message: SuccessMessages.AUTH.TOTP_2FA_ENABLE_SUCCESS,
+      recoveryCodes,
     };
-
-    // 6. If valid, update: two_fa_enabled = true, two_fa_method = TOTP
   }
 
-  async disable2fa({ userId, code }: { userId: string; code: string }) {
+  async disable2fa({
+    userId,
+    password,
+  }: {
+    userId: string;
+    password: string;
+  }) {
     const user = await this.usersService.findOne(userId);
-    if (user.two_fa_method === 'totp') {
-      if (!user.two_fa_totp_secret)
-        throw new BadRequestError(ErrorMessages.AUTH.TWO_FA_NOT_SETUP);
-      const decryptedSecret = decrypt(user.two_fa_totp_secret);
-      const result = verifySync({
-        secret: decryptedSecret,
-        token: code,
-      });
-      if (!result.valid)
-        throw new UnauthorizedError(ErrorMessages.AUTH.TWO_FA_INVALID_CODE);
-      await this.usersService.set2faTotpActiveState(userId, false);
-      return {
-        message: SuccessMessages.AUTH.TOTP_2FA_DISABLE_SUCCESS,
-      };
-    } else {
+
+    if (!user.password) {
+      throw new UnauthorizedError(ErrorMessages.AUTH.INVALID_CREDENTIALS);
+    }
+
+    const validPassword = await argon2.verify(user.password, password);
+    if (!validPassword) {
+      throw new UnauthorizedError(ErrorMessages.AUTH.INVALID_CREDENTIALS);
+    }
+
+    await this.recoveryCodeRepository.delete({ user_id: userId });
+    await this.usersService.set2faTotpActiveState(userId, false);
+    await this.usersService.setRefreshTokenHash(userId, null);
+
+    return {
+      message: SuccessMessages.AUTH.TOTP_2FA_DISABLE_SUCCESS,
+    };
+  }
+
+  async regenerateRecoveryCodes(userId: string, password: string) {
+    const user = await this.usersService.findOne(userId);
+    if (!user.two_fa_enabled) {
       throw new BadRequestError(ErrorMessages.AUTH.TWO_FA_NOT_SETUP);
+    }
+
+    if (!user.password) {
+      throw new UnauthorizedError(ErrorMessages.AUTH.INVALID_CREDENTIALS);
+    }
+
+    const validPassword = await argon2.verify(user.password, password);
+    if (!validPassword) {
+      throw new UnauthorizedError(ErrorMessages.AUTH.INVALID_CREDENTIALS);
+    }
+
+    await this.recoveryCodeRepository.delete({ user_id: userId });
+    const recoveryCodes = this.generateRecoveryCodes(8);
+    await this.saveRecoveryCodes(userId, recoveryCodes);
+    await this.usersService.setRefreshTokenHash(userId, null);
+
+    return {
+      message: 'Recovery codes regenerated',
+      recoveryCodes,
+    };
+  }
+
+  private async consumeStateToken(userId: string) {
+    const redis = this.getRedis();
+    if (redis) {
+      const deleted = await redis.del(`state_token:${userId}`);
+      if (deleted === 0) {
+        throw new UnauthorizedError('state_token already used or expired');
+      }
     }
   }
 
-  async verify2fa({ userId, code }: { userId: string; code: string }) {
+  async verifyMfa({ userId, code }: { userId: string; code: string }) {
+    await this.consumeStateToken(userId);
+
     const user = await this.usersService.findOne(userId);
 
-    console.log(user)
     if (!user.two_fa_enabled || !user.two_fa_method) {
       throw new BadRequestError(ErrorMessages.AUTH.TWO_FA_NOT_SETUP);
     }
@@ -494,12 +587,56 @@ export class AuthService {
       if (!result.valid) {
         throw new UnauthorizedError(ErrorMessages.AUTH.TWO_FA_INVALID_CODE);
       }
-      
+
       return this.issueTokens(user, SuccessMessages.AUTH.LOGIN);
     }
 
-    // placeholder for future methods e.g. TwoFactorAuthMethod.EMAIL
     throw new BadRequestError(ErrorMessages.AUTH.TWO_FA_NOT_SETUP);
+  }
+
+  async verifyRecoveryCode({
+    userId,
+    code,
+  }: {
+    userId: string;
+    code: string;
+  }) {
+    await this.consumeStateToken(userId);
+
+    const user = await this.usersService.findOne(userId);
+
+    if (!user.two_fa_enabled || !user.two_fa_method) {
+      throw new BadRequestError(ErrorMessages.AUTH.TWO_FA_NOT_SETUP);
+    }
+
+    const validCode = await this.verifyRecoveryCodeInternal(userId, code);
+    if (!validCode) {
+      throw new UnauthorizedError(
+        ErrorMessages.AUTH.TWO_FA_INVALID_RECOVERY_CODE,
+      );
+    }
+
+    return this.issueTokens(user, SuccessMessages.AUTH.LOGIN);
+  }
+
+  private async verifyRecoveryCodeInternal(
+    userId: string,
+    inputCode: string,
+  ): Promise<boolean> {
+    const codes = await this.recoveryCodeRepository.find({
+      where: { user_id: userId, used_at: IsNull() },
+    });
+
+    for (const rc of codes) {
+      const valid = await argon2.verify(rc.code_hash, inputCode);
+      if (valid) {
+        await this.recoveryCodeRepository.update(rc.id, {
+          used_at: new Date(),
+        });
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Post-login redirect based on the user's persisted role. */
